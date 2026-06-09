@@ -1,0 +1,12 @@
+[project]
+name = "markdown-viewer"
+version = "0.1.0"
+description = "Streamlit Markdown Viewer"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "markdown>=3.10.2",
+    "pdfkit>=1.0.0",
+    "pip>=26.1.2",
+    "streamlit>=1.58.0",
+]
