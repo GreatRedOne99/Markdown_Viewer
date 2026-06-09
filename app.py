@@ -87,6 +87,17 @@ def main():
     uploaded = st.sidebar.file_uploader("Upload a .md file", type=["md", "markdown"] )
     use_example = st.sidebar.checkbox("Use example markdown", value=True)
 
+    # Show project README in the sidebar for quick reference
+    try:
+        readme_path = Path(__file__).parent / "README.md"
+        if readme_path.exists():
+            with st.sidebar.expander("README", expanded=False):
+                readme_text = readme_path.read_text(encoding="utf-8")
+                st.markdown(readme_text)
+    except Exception:
+        # If reading/rendering README fails, don't break the app
+        pass
+
     content = ""
     if uploaded is not None:
         content = uploaded.read().decode("utf-8")
