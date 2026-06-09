@@ -1,0 +1,16 @@
+<html><head><meta charset="utf-8"></head><body><h1>Example Document</h1>
+<p>This example demonstrates a Mermaid flowchart and a Gantt chart (Mermaid syntax).</p>
+<h2>Flowchart</h2>
+<h2>Gantt</h2>
+<p>Regular markdown content, tables, lists, and code blocks are supported.</p><div class="mermaid">flowchart LR
+  A[Start] --&gt; B{Is it working?}
+  B -- Yes --&gt; C[Great]
+  B -- No --&gt; D[Fix it]
+  D --&gt; B</div><div class="mermaid">gantt
+    title A Gantt Diagram
+    dateFormat  YYYY-MM-DD
+    section Planning
+    Spec       :a1, 2024-01-01, 30d
+    section Development
+    Build      :after a1, 90d
+    Test       : 2024-05-01, 30d</div><script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script><script>if(window.mermaid){mermaid.initialize({startOnLoad:true})};</script></body></html>

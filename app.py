@@ -10,6 +10,12 @@ import traceback
 MERMAID_CDN = "https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"
 
 
+def escape_html(text: str) -> str:
+    return (text.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;"))
+
+
 def render_mermaid(diagram_code: str, key: str = None):
     uid = key or f"m-{uuid.uuid4().hex}"
     html = f"""
@@ -19,55 +25,24 @@ def render_mermaid(diagram_code: str, key: str = None):
       if (window.mermaid) {{ mermaid.initialize({{ startOnLoad: true }}); }}
     }});</script>
     """
-    # Use st.iframe with srcDoc to embed HTML (replaces deprecated components.html)
     try:
         st.iframe(srcDoc=html, height=300)
     except TypeError:
-        # Fallback if streamlit version doesn't support srcDoc: write temp file and load it
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".html")
         tmp.write(html.encode("utf-8"))
         tmp.close()
         st.iframe(tmp.name, height=300)
 
-        # Filename input for PDF
-        default_name = "document"
-        if uploaded is not None and hasattr(uploaded, 'name'):
-            default_name = Path(uploaded.name).stem
 
-        # Initialize session state for PDF storage
-        if 'pdf_ready' not in st.session_state:
-            st.session_state['pdf_ready'] = False
-            st.session_state['pdf_bytes'] = None
-            st.session_state['pdf_filename'] = ''
+def extract_mermaid_blocks(text: str):
+    pattern = re.compile(r"```mermaid\n(.*?)\n```", re.DOTALL | re.IGNORECASE)
+    blocks = pattern.findall(text)
+    cleaned = pattern.sub("", text)
+    return blocks, cleaned
 
-        filename = st.text_input("PDF filename", value=default_name, key='pdf_filename_input')
 
-        if st.button("Save as PDF"):
-            # Reset previous PDF state
-            st.session_state['pdf_ready'] = False
-            st.session_state['pdf_bytes'] = None
-            st.session_state['pdf_filename'] = ''
-            pdf_bytes = export_pdf_bytes(html)
-            if pdf_bytes:
-                st.session_state['pdf_bytes'] = pdf_bytes
-                st.session_state['pdf_filename'] = f"{filename}.pdf"
-                st.session_state['pdf_ready'] = True
-                st.success("PDF generated — click Download to save the file")
-            else:
-                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".html")
-                tmp.write(html.encode("utf-8"))
-                tmp.close()
-                st.warning("PDF export failed — saved HTML instead. You can print to PDF from your browser.")
-                with open(tmp.name, "rb") as f:
-                    st.download_button("Download HTML", f, file_name=Path(tmp.name).name)
-
-        # Show download button only after PDF is ready
-        if st.session_state.get('pdf_ready') and st.session_state.get('pdf_bytes'):
-            st.download_button("Download PDF", data=st.session_state['pdf_bytes'], file_name=st.session_state['pdf_filename'], mime="application/pdf")
-            if st.button("Clear PDF"):
-                st.session_state['pdf_ready'] = False
-                st.session_state['pdf_bytes'] = None
-                st.session_state['pdf_filename'] = ''
+def to_html(full_markdown: str, mermaid_blocks):
+    html_body = md.markdown(full_markdown, extensions=["fenced_code", "tables"])
     mermaid_html = "".join([
         f"<div class=\"mermaid\">{escape_html(b)}</div>" for b in mermaid_blocks
     ])
@@ -77,7 +52,6 @@ def render_mermaid(diagram_code: str, key: str = None):
 
 def export_pdf_bytes(html: str) -> bytes | None:
     """Return PDF bytes generated from HTML, or None on failure."""
-    # Try pdfkit (wkhtmltopdf) first
     try:
         import pdfkit
         result = pdfkit.from_string(html, False)
@@ -86,10 +60,8 @@ def export_pdf_bytes(html: str) -> bytes | None:
     except Exception:
         pass
 
-    # Fallback: use Playwright (synchronous API) if available
     try:
         from playwright.sync_api import sync_playwright
-
         try:
             with sync_playwright() as p:
                 browser = p.chromium.launch(args=["--no-sandbox"]) 
@@ -104,9 +76,7 @@ def export_pdf_bytes(html: str) -> bytes | None:
             traceback.print_exc()
             return None
     except Exception:
-        # Playwright not installed or failed to import
         return None
-
 
 
 def main():
@@ -145,21 +115,56 @@ def main():
     with col2:
         st.subheader("Export")
         html = to_html(cleaned, mermaid_blocks)
-        if st.button("Save as HTML"):
-            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".html")
-            tmp.write(html.encode("utf-8"))
-            tmp.close()
-            st.success(f"Saved HTML to {tmp.name}")
-        # Filename input for PDF
+        # Determine default filename base from uploaded file if present
         default_name = "document"
         if uploaded is not None and hasattr(uploaded, 'name'):
             default_name = Path(uploaded.name).stem
-        filename = st.text_input("PDF filename", value=default_name)
+        # HTML export: generate bytes and offer download like PDF
+        # Initialize session state for HTML
+        if 'html_ready' not in st.session_state:
+            st.session_state['html_ready'] = False
+            st.session_state['html_bytes'] = None
+            st.session_state['html_filename'] = ''
+
+        default_html_name = default_name
+        html_filename = st.text_input("HTML filename", value=default_html_name, key='html_filename_input')
+
+        if st.button("Save as HTML"):
+            st.session_state['html_ready'] = False
+            st.session_state['html_bytes'] = None
+            st.session_state['html_filename'] = ''
+            html_bytes = html.encode('utf-8')
+            st.session_state['html_bytes'] = html_bytes
+            st.session_state['html_filename'] = f"{html_filename}.html"
+            st.session_state['html_ready'] = True
+            st.success("HTML generated — click Download to save the file")
+
+        # Show download button only after HTML is ready
+        if st.session_state.get('html_ready') and st.session_state.get('html_bytes'):
+            st.download_button("Download HTML", data=st.session_state['html_bytes'], file_name=st.session_state['html_filename'], mime="text/html")
+            if st.button("Clear HTML"):
+                st.session_state['html_ready'] = False
+                st.session_state['html_bytes'] = None
+                st.session_state['html_filename'] = ''
+
+        # Initialize session state for PDF storage
+        if 'pdf_ready' not in st.session_state:
+            st.session_state['pdf_ready'] = False
+            st.session_state['pdf_bytes'] = None
+            st.session_state['pdf_filename'] = ''
+
+        filename = st.text_input("PDF filename", value=default_name, key='pdf_filename_input')
+
         if st.button("Save as PDF"):
+            st.session_state['pdf_ready'] = False
+            st.session_state['pdf_bytes'] = None
+            st.session_state['pdf_filename'] = ''
             pdf_bytes = export_pdf_bytes(html)
             if pdf_bytes:
-                st.success("PDF ready — click Download to save the file")
-                st.download_button("Download PDF", data=pdf_bytes, file_name=f"{filename}.pdf", mime="application/pdf")
+                st.session_state['pdf_bytes'] = pdf_bytes
+                st.session_state['pdf_filename'] = f"{filename}.pdf"
+                st.session_state['pdf_ready'] = True
+                st.success("PDF generated — click Download to save the file")
             else:
                 tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".html")
                 tmp.write(html.encode("utf-8"))
@@ -167,6 +172,13 @@ def main():
                 st.warning("PDF export failed — saved HTML instead. You can print to PDF from your browser.")
                 with open(tmp.name, "rb") as f:
                     st.download_button("Download HTML", f, file_name=Path(tmp.name).name)
+
+        if st.session_state.get('pdf_ready') and st.session_state.get('pdf_bytes'):
+            st.download_button("Download PDF", data=st.session_state['pdf_bytes'], file_name=st.session_state['pdf_filename'], mime="application/pdf")
+            if st.button("Clear PDF"):
+                st.session_state['pdf_ready'] = False
+                st.session_state['pdf_bytes'] = None
+                st.session_state['pdf_filename'] = ''
 
 
 if __name__ == "__main__":
