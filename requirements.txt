@@ -1,4 +1,5 @@
 streamlit
 markdown
+python-markdown-math
 pdfkit
 playwright

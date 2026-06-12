@@ -1,13 +1,15 @@
 import re
-import uuid
 import streamlit as st
 import markdown as md
 from pathlib import Path
-import io
-import tempfile
-import traceback
 
-MERMAID_CDN = "https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"
+MERMAID_CDN     = "https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"
+KATEX_CSS       = "https://cdn.jsdelivr.net/npm/katex@0.16/dist/katex.min.css"
+KATEX_JS        = "https://cdn.jsdelivr.net/npm/katex@0.16/dist/katex.min.js"
+KATEX_AUTORENDER = "https://cdn.jsdelivr.net/npm/katex@0.16/dist/contrib/auto-render.min.js"
+
+_MATH_DISPLAY_RE = re.compile(r'\$\$(.*?)\$\$', re.DOTALL)
+_MATH_INLINE_RE  = re.compile(r'(?<!\$)\$([^$\n]+?)\$(?!\$)')
 
 
 def escape_html(text: str) -> str:
@@ -16,67 +18,71 @@ def escape_html(text: str) -> str:
                 .replace(">", "&gt;"))
 
 
-def render_mermaid(diagram_code: str, key: str = None):
-    uid = key or f"m-{uuid.uuid4().hex}"
-    html = f"""
-    <div class="mermaid" id="{uid}">{escape_html(diagram_code)}</div>
-    <script src="{MERMAID_CDN}"></script>
-    <script>document.addEventListener("DOMContentLoaded", function() {{
-      if (window.mermaid) {{ mermaid.initialize({{ startOnLoad: true }}); }}
-    }});</script>
-    """
-    try:
-        st.iframe(srcDoc=html, height=300)
-    except TypeError:
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".html")
-        tmp.write(html.encode("utf-8"))
-        tmp.close()
-        st.iframe(tmp.name, height=300)
+def _protect_math(text: str) -> tuple:
+    """Replace $...$ and $$...$$ with NUL-delimited placeholders before markdown processing."""
+    store = {}
+    counter = [0]
+
+    def _save(latex: str) -> str:
+        key = f"\x00MATH{counter[0]}\x00"
+        store[key] = latex
+        counter[0] += 1
+        return key
+
+    text = _MATH_DISPLAY_RE.sub(lambda m: _save(f'$${m.group(1)}$$'), text)
+    text = _MATH_INLINE_RE.sub(lambda m: _save(f'${m.group(1)}$'), text)
+    return text, store
+
+
+def _restore_math(html: str, store: dict) -> str:
+    for key, val in store.items():
+        html = html.replace(key, val)
+    return html
 
 
 def extract_mermaid_blocks(text: str):
+    """Return ordered list of ('markdown'|'mermaid', content) segments."""
     pattern = re.compile(r"```mermaid\n(.*?)\n```", re.DOTALL | re.IGNORECASE)
-    blocks = pattern.findall(text)
-    cleaned = pattern.sub("", text)
-    return blocks, cleaned
+    segments = []
+    last_end = 0
+    for match in pattern.finditer(text):
+        if match.start() > last_end:
+            segments.append(("markdown", text[last_end:match.start()]))
+        segments.append(("mermaid", match.group(1)))
+        last_end = match.end()
+    if last_end < len(text):
+        segments.append(("markdown", text[last_end:]))
+    return segments
 
 
-def to_html(full_markdown: str, mermaid_blocks):
-    html_body = md.markdown(full_markdown, extensions=["fenced_code", "tables"])
-    mermaid_html = "".join([
-        f"<div class=\"mermaid\">{escape_html(b)}</div>" for b in mermaid_blocks
-    ])
-    full = f"<html><head><meta charset=\"utf-8\"></head><body>{html_body}{mermaid_html}<script src=\"{MERMAID_CDN}\"></script><script>if(window.mermaid){{mermaid.initialize({{startOnLoad:true}})}};</script></body></html>"
-    return full
+def to_html(segments: list) -> str:
+    parts = []
+    for kind, chunk in segments:
+        if kind == "markdown":
+            protected, store = _protect_math(chunk)
+            html_part = md.markdown(protected, extensions=["fenced_code", "tables"])
+            parts.append(_restore_math(html_part, store))
+        else:
+            parts.append(f'<div class="mermaid">{escape_html(chunk)}</div>')
+    html_body = "".join(parts)
+    katex_autorender_init = (
+        "renderMathInElement(document.body,{"
+        "delimiters:["
+        "{left:'$$',right:'$$',display:true},"
+        "{left:'$',right:'$',display:false}"
+        "]});"
+    )
+    return (
+        f'<html><head><meta charset="utf-8">'
+        f'<link rel="stylesheet" href="{KATEX_CSS}">'
+        f'<script defer src="{KATEX_JS}"></script>'
+        f'<script defer src="{KATEX_AUTORENDER}" onload="{katex_autorender_init}"></script>'
+        f'</head><body style="font-family:sans-serif;padding:1rem">{html_body}'
+        f'<script src="{MERMAID_CDN}"></script>'
+        f'<script>mermaid.initialize({{startOnLoad:true}});</script>'
+        f'</body></html>'
+    )
 
-
-def export_pdf_bytes(html: str) -> bytes | None:
-    """Return PDF bytes generated from HTML, or None on failure."""
-    try:
-        import pdfkit
-        result = pdfkit.from_string(html, False)
-        if isinstance(result, (bytes, bytearray)):
-            return bytes(result)
-    except Exception:
-        pass
-
-    try:
-        from playwright.sync_api import sync_playwright
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(args=["--no-sandbox"]) 
-                page = browser.new_page()
-                page.set_content(html, wait_until='networkidle')
-                pdf_bytes = page.pdf(format='A4')
-                browser.close()
-                if isinstance(pdf_bytes, (bytes, bytearray)):
-                    return bytes(pdf_bytes)
-        except Exception:
-            print("Playwright PDF generation failed:")
-            traceback.print_exc()
-            return None
-    except Exception:
-        return None
 
 
 def main():
@@ -84,18 +90,15 @@ def main():
     st.title("Markdown Viewer — Streamlit")
 
     st.sidebar.header("Load Markdown")
-    uploaded = st.sidebar.file_uploader("Upload a .md file", type=["md", "markdown"] )
+    uploaded = st.sidebar.file_uploader("Upload a .md file", type=["md", "markdown"])
     use_example = st.sidebar.checkbox("Use example markdown", value=True)
 
-    # Show project README in the sidebar for quick reference
     try:
         readme_path = Path(__file__).parent / "README.md"
         if readme_path.exists():
             with st.sidebar.expander("README", expanded=False):
-                readme_text = readme_path.read_text(encoding="utf-8")
-                st.markdown(readme_text)
+                st.markdown(readme_path.read_text(encoding="utf-8"))
     except Exception:
-        # If reading/rendering README fails, don't break the app
         pass
 
     content = ""
@@ -110,86 +113,36 @@ def main():
         st.info("Upload a markdown file or enable 'Use example markdown' in the sidebar.")
         return
 
-    mermaid_blocks, cleaned = extract_mermaid_blocks(content)
+    segments = extract_mermaid_blocks(content)
+    html = to_html(segments)
 
-    col1, col2 = st.columns([3,1])
-    with col1:
-        st.subheader("Rendered Document")
-        st.markdown(md.markdown(cleaned, extensions=["fenced_code", "tables"]), unsafe_allow_html=True)
-        if mermaid_blocks:
-            st.markdown("---")
-            st.subheader("Diagrams")
-            for i, block in enumerate(mermaid_blocks):
-                st.markdown(f"**Diagram {i+1}**")
-                render_mermaid(block, key=f"mermaid-{i}")
+    default_name = "document"
+    if uploaded is not None and hasattr(uploaded, 'name'):
+        default_name = Path(uploaded.name).stem
 
-    with col2:
-        st.subheader("Export")
-        html = to_html(cleaned, mermaid_blocks)
-        # Determine default filename base from uploaded file if present
-        default_name = "document"
-        if uploaded is not None and hasattr(uploaded, 'name'):
-            default_name = Path(uploaded.name).stem
-        # HTML export: generate bytes and offer download like PDF
-        # Initialize session state for HTML
-        if 'html_ready' not in st.session_state:
+    st.sidebar.header("Export")
+
+    if 'html_ready' not in st.session_state:
+        st.session_state['html_ready'] = False
+        st.session_state['html_bytes'] = None
+        st.session_state['html_filename'] = ''
+
+    html_filename = st.sidebar.text_input("Filename", value=default_name, key='html_filename_input')
+
+    if st.sidebar.button("Save as HTML"):
+        st.session_state['html_bytes'] = html.encode('utf-8')
+        st.session_state['html_filename'] = f"{html_filename}.html"
+        st.session_state['html_ready'] = True
+
+    if st.session_state.get('html_ready') and st.session_state.get('html_bytes'):
+        st.sidebar.download_button("Download HTML", data=st.session_state['html_bytes'], file_name=st.session_state['html_filename'], mime="text/html")
+        if st.sidebar.button("Clear"):
             st.session_state['html_ready'] = False
             st.session_state['html_bytes'] = None
             st.session_state['html_filename'] = ''
 
-        default_html_name = default_name
-        html_filename = st.text_input("HTML filename", value=default_html_name, key='html_filename_input')
-
-        if st.button("Save as HTML"):
-            st.session_state['html_ready'] = False
-            st.session_state['html_bytes'] = None
-            st.session_state['html_filename'] = ''
-            html_bytes = html.encode('utf-8')
-            st.session_state['html_bytes'] = html_bytes
-            st.session_state['html_filename'] = f"{html_filename}.html"
-            st.session_state['html_ready'] = True
-            st.success("HTML generated — click Download to save the file")
-
-        # Show download button only after HTML is ready
-        if st.session_state.get('html_ready') and st.session_state.get('html_bytes'):
-            st.download_button("Download HTML", data=st.session_state['html_bytes'], file_name=st.session_state['html_filename'], mime="text/html")
-            if st.button("Clear HTML"):
-                st.session_state['html_ready'] = False
-                st.session_state['html_bytes'] = None
-                st.session_state['html_filename'] = ''
-
-        # Initialize session state for PDF storage
-        if 'pdf_ready' not in st.session_state:
-            st.session_state['pdf_ready'] = False
-            st.session_state['pdf_bytes'] = None
-            st.session_state['pdf_filename'] = ''
-
-        filename = st.text_input("PDF filename", value=default_name, key='pdf_filename_input')
-
-        if st.button("Save as PDF"):
-            st.session_state['pdf_ready'] = False
-            st.session_state['pdf_bytes'] = None
-            st.session_state['pdf_filename'] = ''
-            pdf_bytes = export_pdf_bytes(html)
-            if pdf_bytes:
-                st.session_state['pdf_bytes'] = pdf_bytes
-                st.session_state['pdf_filename'] = f"{filename}.pdf"
-                st.session_state['pdf_ready'] = True
-                st.success("PDF generated — click Download to save the file")
-            else:
-                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".html")
-                tmp.write(html.encode("utf-8"))
-                tmp.close()
-                st.warning("PDF export failed — saved HTML instead. You can print to PDF from your browser.")
-                with open(tmp.name, "rb") as f:
-                    st.download_button("Download HTML", f, file_name=Path(tmp.name).name)
-
-        if st.session_state.get('pdf_ready') and st.session_state.get('pdf_bytes'):
-            st.download_button("Download PDF", data=st.session_state['pdf_bytes'], file_name=st.session_state['pdf_filename'], mime="application/pdf")
-            if st.button("Clear PDF"):
-                st.session_state['pdf_ready'] = False
-                st.session_state['pdf_bytes'] = None
-                st.session_state['pdf_filename'] = ''
+    st.subheader("Rendered Document")
+    st.iframe(html)
 
 
 if __name__ == "__main__":
