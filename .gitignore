@@ -226,3 +226,4 @@ __marimo__/
 
 # App data
 .recent_files.json
+.uploaded_files/

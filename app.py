@@ -7,6 +7,7 @@ import markdown as md
 from pathlib import Path
 
 RECENT_FILES_PATH = Path(__file__).parent / ".recent_files.json"
+UPLOAD_CACHE_DIR = Path(__file__).parent / ".uploaded_files"
 MAX_RECENT_FILES = 20
 
 MERMAID_CDN     = "https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"
@@ -97,14 +98,21 @@ def to_html(segments: list) -> str:
         "]});"
     )
     search_bar_html = (
-        '<div id="search-bar" style="position:sticky;top:0;z-index:9999;background:#fff;'
-        'padding:6px 10px;border-bottom:1px solid #ddd;display:flex;align-items:center;gap:8px;">'
+        '<div id="search-bar" style="position:fixed;top:0;left:0;right:0;z-index:9999;'
+        'background:#fff;padding:6px 10px;border-bottom:1px solid #ddd;'
+        'display:flex;align-items:center;gap:8px;box-shadow:0 2px 4px rgba(0,0,0,0.1);">'
         '<input id="search-input" type="text" placeholder="Search document…" '
         'style="flex:1;padding:4px 8px;font-size:14px;border:1px solid #ccc;border-radius:4px;">'
-        '<span id="search-count" style="font-size:13px;color:#666;min-width:60px;"></span>'
-        '<button onclick="searchNav(-1)" style="padding:2px 8px;cursor:pointer;">▲</button>'
-        '<button onclick="searchNav(1)" style="padding:2px 8px;cursor:pointer;">▼</button>'
-        '<button onclick="clearSearch()" style="padding:2px 8px;cursor:pointer;">✕</button>'
+        '<label style="font-size:13px;color:#666;display:flex;align-items:center;gap:3px;'
+        'cursor:pointer;white-space:nowrap;">'
+        '<input id="regex-toggle" type="checkbox" style="cursor:pointer;"> Regex</label>'
+        '<span id="search-count" style="font-size:13px;color:#666;min-width:70px;text-align:center;"></span>'
+        '<button onclick="searchNav(-1)" style="padding:2px 8px;cursor:pointer;border:1px solid #ccc;'
+        'border-radius:3px;background:#f5f5f5;">▲</button>'
+        '<button onclick="searchNav(1)" style="padding:2px 8px;cursor:pointer;border:1px solid #ccc;'
+        'border-radius:3px;background:#f5f5f5;">▼</button>'
+        '<button onclick="clearSearch()" style="padding:2px 8px;cursor:pointer;border:1px solid #ccc;'
+        'border-radius:3px;background:#f5f5f5;">✕</button>'
         '</div>'
     )
     search_script = """
@@ -114,15 +122,31 @@ function doSearch() {
   clearMarks();
   const q = document.getElementById('search-input').value.trim();
   if (!q) { document.getElementById('search-count').textContent = ''; return; }
+  const useRegex = document.getElementById('regex-toggle').checked;
+  let regex;
+  if (useRegex) {
+    try { regex = new RegExp(q, 'gi'); }
+    catch(e) { document.getElementById('search-count').textContent = 'Bad regex'; return; }
+  }
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
   const hits = [];
   while (walker.nextNode()) {
     const node = walker.currentNode;
     if (node.parentElement && node.parentElement.closest('#search-bar')) continue;
-    let idx, start = 0, lower = node.textContent.toLowerCase(), ql = q.toLowerCase();
-    while ((idx = lower.indexOf(ql, start)) !== -1) {
-      hits.push({node, idx, len: q.length});
-      start = idx + q.length;
+    const text = node.textContent;
+    if (useRegex) {
+      regex.lastIndex = 0;
+      let m;
+      while ((m = regex.exec(text)) !== null) {
+        if (m[0].length === 0) { regex.lastIndex++; continue; }
+        hits.push({node, idx: m.index, len: m[0].length});
+      }
+    } else {
+      let idx, start = 0, lower = text.toLowerCase(), ql = q.toLowerCase();
+      while ((idx = lower.indexOf(ql, start)) !== -1) {
+        hits.push({node, idx, len: q.length});
+        start = idx + q.length;
+      }
     }
   }
   for (let i = hits.length - 1; i >= 0; i--) {
@@ -167,6 +191,7 @@ document.addEventListener('DOMContentLoaded', function() {
     clearTimeout(timer);
     timer = setTimeout(doSearch, 250);
   });
+  document.getElementById('regex-toggle').addEventListener('change', doSearch);
   document.getElementById('search-input').addEventListener('keydown', function(e) {
     if (e.key === 'Enter') { e.preventDefault(); searchNav(e.shiftKey ? -1 : 1); }
   });
@@ -178,7 +203,7 @@ document.addEventListener('DOMContentLoaded', function() {
         f'<link rel="stylesheet" href="{KATEX_CSS}">'
         f'<script defer src="{KATEX_JS}"></script>'
         f'<script defer src="{KATEX_AUTORENDER}" onload="{katex_autorender_init}"></script>'
-        f'</head><body style="font-family:sans-serif;padding:1rem">'
+        f'</head><body style="font-family:sans-serif;padding:40px 1rem 1rem 1rem">'
         f'{search_bar_html}{html_body}'
         f'<script src="{MERMAID_CDN}"></script>'
         f'<script>mermaid.initialize({{startOnLoad:true}});</script>'
@@ -196,16 +221,16 @@ def main():
     uploaded = st.sidebar.file_uploader("Upload a .md file", type=["md", "markdown"])
     use_example = st.sidebar.checkbox("Use example markdown", value=True)
 
-    local_path = st.sidebar.text_input("Or enter a file path", key="local_path_input")
-
     recents = load_recent_files()
     st.sidebar.header("Recent Files")
     if recents:
-        selected_recent = st.sidebar.selectbox(
+        st.sidebar.selectbox(
             "Open a recent file",
             options=[""] + recents,
-            format_func=lambda x: "— select —" if x == "" else x,
+            format_func=lambda x: "— select —" if x == "" else Path(x).name,
+            key="recent_select",
         )
+        selected_recent = st.session_state.get("recent_select", "")
     else:
         selected_recent = ""
         st.sidebar.caption("No recent files yet.")
@@ -220,23 +245,20 @@ def main():
 
     content = ""
     active_name = None
-    if uploaded is not None:
-        content = uploaded.read().decode("utf-8")
-        active_name = uploaded.name
-    elif local_path:
-        lp = Path(local_path)
-        if lp.exists():
-            content = lp.read_text(encoding="utf-8")
-            active_name = str(lp.resolve())
-        else:
-            st.sidebar.warning(f"File not found: {local_path}")
-    elif selected_recent:
+    if selected_recent:
         recent_path = Path(selected_recent)
         if recent_path.exists():
             content = recent_path.read_text(encoding="utf-8")
             active_name = selected_recent
         else:
             st.sidebar.warning(f"File not found: {selected_recent}")
+    elif uploaded is not None:
+        content = uploaded.read().decode("utf-8")
+        if content:
+            UPLOAD_CACHE_DIR.mkdir(exist_ok=True)
+            cached = UPLOAD_CACHE_DIR / uploaded.name
+            cached.write_text(content, encoding="utf-8")
+            active_name = str(cached.resolve())
     elif use_example:
         sample = Path(__file__).parent / "example.md"
         if sample.exists():
@@ -250,7 +272,6 @@ def main():
         return
 
     segments = extract_mermaid_blocks(content)
-    html = to_html(segments)
 
     default_name = "document"
     if uploaded is not None and hasattr(uploaded, 'name'):
@@ -266,7 +287,7 @@ def main():
     html_filename = st.sidebar.text_input("Filename", value=default_name, key='html_filename_input')
 
     if st.sidebar.button("Save as HTML"):
-        st.session_state['html_bytes'] = html.encode('utf-8')
+        st.session_state['html_bytes'] = to_html(segments).encode('utf-8')
         st.session_state['html_filename'] = f"{html_filename}.html"
         st.session_state['html_ready'] = True
 
@@ -278,6 +299,8 @@ def main():
             st.session_state['html_filename'] = ''
 
     st.subheader("Rendered Document")
+
+    html = to_html(segments)
     st.iframe(html)
 
     st.sidebar.divider()
