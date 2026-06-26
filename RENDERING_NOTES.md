@@ -1,36 +1,13 @@
-# Streamlit Markdown Rendering — Session Notes
-_Captured 2026-06-12_
+# Markdown Rendering — Session Notes
+_Updated 2026-06-26 — migrated from Streamlit to Flask_
 
-## Problem
-Streamlit's built-in `st.markdown()` has two failure modes for rich documents:
+## Architecture
 
-1. **LaTeX**: Using `unsafe_allow_html=True` conflicts with KaTeX in the frontend — equations render as raw text.
-2. **Mermaid diagrams**: There is no native Streamlit API for rendering Mermaid. `st.components.v1.html()` was deprecated in 1.58.0.
+Single-file Flask app (`app.py`) that converts Markdown to a full HTML page with client-side KaTeX and Mermaid rendering. No iframe — the rendered document is served directly as the page content.
 
-## Solution: Single HTML Pipeline
-
-Render the entire document — markdown, LaTeX, and Mermaid diagrams — in one `st.iframe()` call using a self-contained HTML page built server-side.
-
-```python
-st.iframe(to_html(segments))
 ```
-
-The iframe auto-sizes to content height because `st.iframe()` defaults to `height="content"`.
-
----
-
-## Key: `st.iframe()` in Streamlit 1.58.0
-
-```python
-st.iframe(src, *, width="stretch", height="content", tab_index=None)
+.md file → extract_mermaid_blocks() → render_body() → build_page() → browser
 ```
-
-- `src` is **positional** — no `srcDoc` keyword argument (that raises `TypeError`).
-- If `src` contains `<`, Streamlit detects it as HTML and embeds it as `srcdoc` automatically.
-- `height="content"` auto-sizes the iframe to its rendered content — including after JavaScript runs.
-- `scrolling` is always `True` in the new API (hardcoded in the source).
-
-**Do not use** `st.components.v1.html()` — deprecated since 1.58.0, removed after 2026-06-01.
 
 ---
 
@@ -47,24 +24,9 @@ st.iframe(src, *, width="stretch", height="content", tab_index=None)
 _MATH_DISPLAY_RE = re.compile(r'\$\$(.*?)\$\$', re.DOTALL)
 _MATH_INLINE_RE  = re.compile(r'(?<!\$)\$([^$\n]+?)\$(?!\$)')
 
-def _protect_math(text: str) -> tuple:
-    store = {}
-    counter = [0]
-
-    def _save(latex: str) -> str:
-        key = f"\x00MATH{counter[0]}\x00"
-        store[key] = latex
-        counter[0] += 1
-        return key
-
-    text = _MATH_DISPLAY_RE.sub(lambda m: _save(f'$${m.group(1)}$$'), text)
-    text = _MATH_INLINE_RE.sub(lambda m: _save(f'${m.group(1)}$'), text)
-    return text, store
-
-def _restore_math(html: str, store: dict) -> str:
-    for key, val in store.items():
-        html = html.replace(key, val)
-    return html
+def _protect_math(text):
+    # Replace $...$ and $$...$$ with NUL-delimited placeholders
+    # Restore after markdown processing
 ```
 
 `\x00`-delimited keys are safe because they never appear in normal markdown text and the markdown parser ignores them.
@@ -83,23 +45,9 @@ html_part = _restore_math(html_part, store)
 KATEX_CSS        = "https://cdn.jsdelivr.net/npm/katex@0.16/dist/katex.min.css"
 KATEX_JS         = "https://cdn.jsdelivr.net/npm/katex@0.16/dist/katex.min.js"
 KATEX_AUTORENDER = "https://cdn.jsdelivr.net/npm/katex@0.16/dist/contrib/auto-render.min.js"
-
-katex_init = (
-    "renderMathInElement(document.body,{"
-    "delimiters:["
-    "{left:'$$',right:'$$',display:true},"
-    "{left:'$',right:'$',display:false}"
-    "]});"
-)
-
-head = (
-    f'<link rel="stylesheet" href="{KATEX_CSS}">'
-    f'<script defer src="{KATEX_JS}"></script>'
-    f'<script defer src="{KATEX_AUTORENDER}" onload="{katex_init}"></script>'
-)
 ```
 
-KaTeX is the same engine Streamlit uses internally. The `defer` + `onload` pattern ensures auto-render fires after KaTeX itself loads.
+KaTeX auto-render fires via `defer` + `onload` pattern after KaTeX itself loads.
 
 ---
 
@@ -109,18 +57,9 @@ KaTeX is the same engine Streamlit uses internally. The `defer` + `onload` patte
 Extract mermaid blocks as ordered `(kind, content)` segments rather than stripping them all out. Otherwise diagrams always appear at the bottom.
 
 ```python
-def extract_mermaid_blocks(text: str):
-    pattern = re.compile(r"```mermaid\n(.*?)\n```", re.DOTALL | re.IGNORECASE)
-    segments = []
-    last_end = 0
-    for match in pattern.finditer(text):
-        if match.start() > last_end:
-            segments.append(("markdown", text[last_end:match.start()]))
-        segments.append(("mermaid", match.group(1)))
-        last_end = match.end()
-    if last_end < len(text):
-        segments.append(("markdown", text[last_end:]))
-    return segments
+def extract_mermaid_blocks(text):
+    # Returns list of ("markdown", content) and ("mermaid", content) tuples
+    # in document order
 ```
 
 ### Render inline in the HTML
@@ -133,50 +72,33 @@ for kind, chunk in segments:
         parts.append(f'<div class="mermaid">{escape_html(chunk)}</div>')
 ```
 
-Then at the bottom of `<body>`:
-
-```python
-MERMAID_CDN = "https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"
-
-f'<script src="{MERMAID_CDN}"></script>'
-f'<script>mermaid.initialize({{startOnLoad:true}});</script>'
-```
-
 Load the Mermaid CDN **after** the body content, **after** KaTeX. Load order matters — Mermaid last.
 
 ---
 
-## Complete `to_html` function
+## Migration from Streamlit
 
-```python
-def to_html(segments: list) -> str:
-    parts = []
-    for kind, chunk in segments:
-        if kind == "markdown":
-            protected, store = _protect_math(chunk)
-            html_part = md.markdown(protected, extensions=["fenced_code", "tables"])
-            parts.append(_restore_math(html_part, store))
-        else:
-            parts.append(f'<div class="mermaid">{escape_html(chunk)}</div>')
-    html_body = "".join(parts)
-    katex_init = (
-        "renderMathInElement(document.body,{"
-        "delimiters:["
-        "{left:'$$',right:'$$',display:true},"
-        "{left:'$',right:'$',display:false}"
-        "]});"
-    )
-    return (
-        f'<html><head><meta charset="utf-8">'
-        f'<link rel="stylesheet" href="{KATEX_CSS}">'
-        f'<script defer src="{KATEX_JS}"></script>'
-        f'<script defer src="{KATEX_AUTORENDER}" onload="{katex_init}"></script>'
-        f'</head><body style="font-family:sans-serif;padding:1rem">{html_body}'
-        f'<script src="{MERMAID_CDN}"></script>'
-        f'<script>mermaid.initialize({{startOnLoad:true}});</script>'
-        f'</body></html>'
-    )
-```
+### Why we moved
+Streamlit reruns the entire script on every widget interaction. This caused:
+- Search bar inside an iframe couldn't stay fixed (sticky/fixed positioning failed)
+- Moving search to Streamlit widgets caused full page rerenders on every keystroke/button click
+- Recent file selection required `session_state` hacks to work on first click
+- File upload state persisted across interactions, blocking other load paths
+
+### What changed
+| Before (Streamlit) | After (Flask) |
+|---|---|
+| `st.iframe(html_string)` | Direct HTML page served by Flask |
+| `st.sidebar` widgets | HTML sidebar with native form elements |
+| `st.file_uploader` | Drag & drop + `<input type="file">` |
+| `st.session_state` hacks | Standard HTTP request/response |
+| Search in iframe or Streamlit widgets | In-page JS search, no rerenders |
+
+### What stayed the same
+- `extract_mermaid_blocks()` — unchanged
+- `_protect_math()` / `_restore_math()` — unchanged
+- KaTeX + Mermaid CDN loading pattern — unchanged
+- `.recent_files.json` / `.uploaded_files/` — unchanged
 
 ---
 
@@ -184,21 +106,17 @@ def to_html(segments: list) -> str:
 
 | Pitfall | Fix |
 |---|---|
-| `st.components.v1.html()` deprecated | Use `st.iframe(html_string)` |
-| `st.iframe(srcDoc=...)` raises `TypeError` | Pass HTML as plain positional arg: `st.iframe(html)` |
 | `mdx_math` + MathJax 3 silently drops equations | Use KaTeX auto-render + manual math protection |
-| `unsafe_allow_html=True` breaks KaTeX in `st.markdown()` | Move rendering to `st.iframe()` entirely |
 | Mermaid diagrams displaced to bottom of document | Return ordered segments, not stripped blocks |
-| Diagram height cut off | `st.iframe()` with `height="content"` auto-sizes after JS renders |
-| Temp file leak on every PDF failure | Pass bytes directly to `st.download_button(data=...)` |
+| Streamlit reruns on every interaction | Migrated to Flask — standard request/response model |
 
 ---
 
 ## Dependencies (runtime)
 
 ```
-streamlit>=1.58.0
-markdown>=3.10.2
+flask>=3.1
+markdown>=3.10
 ```
 
 KaTeX and Mermaid load from CDN at runtime — no Python packages needed for rendering.

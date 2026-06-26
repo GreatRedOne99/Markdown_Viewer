@@ -1,5 +1,2 @@
-streamlit
-markdown
-python-markdown-math
-pdfkit
-playwright
+flask>=3.1
+markdown>=3.10

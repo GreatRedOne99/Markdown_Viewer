@@ -1,6 +1,6 @@
 # Markdown Viewer
 
-A Streamlit app for viewing rich Markdown documents outside of an IDE — with full support for LaTeX equations, Mermaid diagrams, tables, and fenced code blocks.
+A Flask web app for viewing rich Markdown documents outside of an IDE — with full support for LaTeX equations, Mermaid diagrams, tables, and fenced code blocks.
 
 ## Why
 
@@ -11,34 +11,39 @@ Markdown documents with embedded math and diagrams look great in VS Code but are
 - **LaTeX equations** — inline `$...$` and display `$$...$$` rendered via KaTeX
 - **Mermaid diagrams** — flowcharts, Gantt charts, sequence diagrams, rendered inline in document order
 - **Markdown** — tables, fenced code blocks, headings, lists, emphasis
+- **In-page search** — keyword and regex search with match highlighting and navigation
+- **Drag & drop upload** — drop a `.md` file onto the sidebar or click to browse
+- **Recent files** — quick access to previously opened documents
 - **HTML export** — self-contained file with KaTeX and Mermaid baked in; opens correctly in any browser
-- **Sidebar controls** — upload, example toggle, export, and README all in the sidebar; full-width document view
+- **Shutdown button** — cleanly stop the server from the UI
 
 ## Quick start
 
 1. Install dependencies:
 
 ```bash
-pip install -r requirements.txt
+uv sync
 ```
 
-2. Run the app:
+1. Run the app:
 
 ```bash
-streamlit run app.py
+uv run python app.py
 ```
 
-3. Upload a `.md` file via the sidebar, or enable **Use example markdown** to see a demo document with diagrams.
+The browser opens automatically to `http://127.0.0.1:5000`.
+
+3. Drop a `.md` file onto the upload area, or the example document loads by default.
 
 ## How to use
 
 | Control | Location | Purpose |
 | --- | --- | --- |
-| Upload `.md` file | Sidebar | Load your document |
-| Use example markdown | Sidebar | Toggle the built-in demo |
-| Filename / Save as HTML | Sidebar | Generate a self-contained HTML file |
-| Download HTML | Sidebar | Save after generating |
-| README | Sidebar (collapsed) | This file |
+| Drop / browse `.md` file | Sidebar | Load your document |
+| Recent Files | Sidebar | Reopen a previously viewed file |
+| Search bar | Top of content area | Keyword or regex search with prev/next navigation |
+| Download as HTML | Sidebar | Export a self-contained HTML file |
+| Shutdown App | Sidebar (bottom) | Stop the Flask server |
 
 The rendered document fills the main panel. Diagrams appear inline where they are in the source, not at the bottom.
 
@@ -46,18 +51,18 @@ The rendered document fills the main panel. Diagrams appear inline where they ar
 
 | Component | Role |
 | --- | --- |
-| [Streamlit](https://streamlit.io) | UI framework |
-| [Python-Markdown](https://python-markdown.github.io) | Markdown → HTML conversion |
+| [Flask](https://flask.palletsprojects.com) | Web framework |
+| [Python-Markdown](https://python-markdown.github.io) | Markdown to HTML conversion |
 | [KaTeX](https://katex.org) (CDN) | LaTeX equation rendering |
 | [Mermaid](https://mermaid.js.org) (CDN) | Diagram rendering |
 
-No server-side LaTeX or diagram installation required — both render client-side via CDN inside a `st.iframe`.
+No server-side LaTeX or diagram installation required — both render client-side via CDN.
 
 ## Requirements
 
 ```text
-streamlit>=1.58.0
-markdown>=3.10.2
+flask>=3.1
+markdown>=3.10
 ```
 
 See [requirements.txt](requirements.txt) for the full list.
